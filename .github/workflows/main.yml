@@ -51,7 +51,7 @@ jobs:
         pgpKey: ${{ secrets.PGP_KEY }}
         pgpKeyPassword: ${{ secrets.PGP_KEY_PASSWD }}
         pacmanRepo: ${{ secrets.PACMAN_REPO }}
-        deployPath: onedrive:mirrors/archlinuxarm/${PACMAN_ARCH}/${PACMAN_REPO}
+        deployPath: ${{ secrets.DEPLOY_PATH }}
     - name: Send mail
       uses: atomlong/send-mail-action@v2
       if: ${{ steps.runcmd.outputs.message != '' }}
