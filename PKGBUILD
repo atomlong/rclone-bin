@@ -2,7 +2,7 @@
 
 pkgname=rclone-bin
 _srcname=rclone
-pkgver=1.55.1
+pkgver=1.61.1
 pkgrel=1
 pkgdesc="Sync files to and from Google Drive, S3, Swift, Cloudfiles, Dropbox and Google Cloud Storage."
 provides=('rclone')
@@ -16,8 +16,8 @@ source_i686=("https://github.com/ncw/rclone/releases/download/v$pkgver/rclone-v$
 source_x86_64=("https://github.com/ncw/rclone/releases/download/v$pkgver/rclone-v$pkgver-windows-amd64.zip")
 source=("https://raw.githubusercontent.com/ncw/rclone/v$pkgver/COPYING")
 sha256sums=('8cd2e9e750b90a04b7d82dbbca3930c696ae0309d7c10464f90a44f45754cd04')
-sha256sums_i686=('2133a91f7cc4d3d456727a8004db0268c2dc8cc373886124e89d8bd743a18843')
-sha256sums_x86_64=('4a0b0a80a93836b02dea026b0c8277066e78ab1a73bba2793ee0ca11609846d1')
+sha256sums_i686=('79ae4620212f13c7881985eb57c819c01e8faa66b14ec44827a641848d93b76b')
+sha256sums_x86_64=('99daaa95867cdf0758ec1d5d7f2ebdb3bf74c8c8602e2aaf888e637163d2ebdd')
 
 package() {
   cd $srcdir/$_srcname-v$pkgver-$_arch
