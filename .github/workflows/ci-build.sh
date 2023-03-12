@@ -140,7 +140,7 @@ sed -r 's/]/&\nServer = /' <<< ${repo} >> /etc/pacman.conf
 sed -i -r 's/^(SigLevel\s*=\s*).*/\1Never/' /etc/pacman.conf
 for ((i=0; i<5; i++)); do
 err=$(
-LANG=en_US.UTF-8 pacman --sync --refresh --needed --noconfirm --disable-download-timeout ${name}-keyring 2>&1 | tee /dev/stderr | sed -n "/error: target not found: ${name}-keyring/p"
+LANG=en_US.UTF-8 pacman --sync --refresh --needed --noconfirm --disable-download-timeout ${name}-keyring 2>&1 | tee /proc/self/fd/2 | sed -n "/error: target not found: ${name}-keyring/p"
 exit ${PIPESTATUS}
 )
 [ $? == 0 ] && break
@@ -263,7 +263,7 @@ export PKG_FILES=(${PKG_FILES[@]} $(ls *${PKGEXT}))
 for file in ${PACMAN_REPO}.{db,files}{,.tar.xz}{,.old}; do
 rclone copy ${DEPLOY_PATH}/${file} ${PWD} 2>/dev/null || true
 done
-old_pkgs=($(repo-add "${PACMAN_REPO}.db.tar.xz" *${PKGEXT} | tee /dev/stderr | grep -Po "\bRemoving existing entry '\K[^']+(?=')"))
+old_pkgs=($(repo-add "${PACMAN_REPO}.db.tar.xz" *${PKGEXT} | tee /proc/self/fd/2 | grep -Po "\bRemoving existing entry '\K[^']+(?=')"))
 popd
 
 echo "Tring to delete old files on remote server ..."

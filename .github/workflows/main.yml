@@ -25,7 +25,7 @@ jobs:
       with:
         msystem: MSYS
         install: git base-devel msys2-devel
-        update: true
+        update: true        
     - name: CI-Build
       shell: msys2 {0}
       id: runcmd
