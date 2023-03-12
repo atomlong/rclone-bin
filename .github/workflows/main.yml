@@ -18,7 +18,11 @@ jobs:
   build-msys2-pkg:
     runs-on: windows-latest
     steps:
-    - uses: actions/checkout@v2
+    - name: Set git to use LF
+      run: |
+        git config --global core.autocrlf false
+        git config --global core.eol lf
+    - uses: actions/checkout@v3
       with:
         fetch-depth: 0
     - uses: msys2/setup-msys2@v2
@@ -41,6 +45,7 @@ jobs:
         export CI_COMMIT=$(git rev-parse HEAD)
         export CI_BUILD_DIR=${GITHUB_WORKSPACE}
         export CI_BUILD_NUMBER=${GITHUB_RUN_NUMBER}
+        export CI_REPO=${GITHUB_REPOSITORY}
         ./.github/workflows/ci-build.sh
     - name: Send mail
       uses: atomlong/send-mail-action@v2

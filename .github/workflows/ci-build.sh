@@ -39,22 +39,6 @@ _package_info() {
     done
 }
 
-# record current commit hash of one package
-_record_package_hash()
-{
-local package="${1}"
-local marker="build.marker"
-local commit_sha
-
-commit_sha="$(git log --pretty=format:'%H' -1)"
-rclone copy "${DEPLOY_PATH%/*}/${marker}" . &>/dev/null || touch "${marker}"
-grep -Pq "^\s*\[[[:xdigit:]]+\]${package}\s*$" ${marker} && \
-sed -i -r "s|^(\[)[[:xdigit:]]+(\]${package}\s*)$|\1${commit_sha}\2|g" "${marker}" || \
-echo "[${commit_sha}]${package}" >> "${marker}"
-rclone move "${marker}" "${DEPLOY_PATH%/*}"
-return 0
-}
-
 # Lock the remote file to prevent it from being modified by another instance.
 _lock_file()
 {
@@ -106,18 +90,50 @@ rm -vf lockfile.lck
 return 0
 }
 
+# get last commit hash of one package
+_last_package_hash()
+{
+local package="${PACMAN_REPO}/${CI_REPO#*/}"
+local marker="build.marker"
+rclone cat "${PKG_DEPLOY_PATH}/${marker}" 2>/dev/null | sed -rn "s|^\[([[:xdigit:]]+)\]${package}\s*$|\1|p"
+return 0
+}
+
+# get current commit hash of one package
+_now_package_hash()
+{
+git log --pretty=format:'%H' -1 2>/dev/null
+return 0
+}
+
+# record current commit hash of one package
+_record_package_hash()
+{
+local package="${PACMAN_REPO}/${CI_REPO#*/}"
+local marker="build.marker"
+local commit_sha
+
+_lock_file "${PKG_DEPLOY_PATH}/${marker}"
+commit_sha="$(_now_package_hash)"
+rclone lsf "${PKG_DEPLOY_PATH}/${marker}" &>/dev/null && while ! rclone copy "${PKG_DEPLOY_PATH}/${marker}" . &>/dev/null; do :; done || touch "${marker}"
+grep -Pq "\[[[:xdigit:]]+\]${package}\s*$" ${marker} && \
+sed -i -r "s|^(\[)[[:xdigit:]]+(\]${package}\s*)$|\1${commit_sha}\2|g" "${marker}" || \
+echo "[${commit_sha}]${package}" >> "${marker}"
+rclone move "${marker}" "${PKG_DEPLOY_PATH}"
+_release_file "${PKG_DEPLOY_PATH}/${marker}"
+return 0
+}
+
 # Run command with status
 execute(){
     local status="${1}"
     local command="${2}"
     local arguments=("${@:3}")
-	[ -n "${package}" ] && pushd ${package}
     message "${status}"
     if [[ "${command}" != *:* ]]
         then ${command} ${arguments[@]}
         else ${command%%:*} | ${command#*:} ${arguments[@]}
     fi || failure "${status} failed"
-    [ -n "${package}" ] && popd
 }
 
 # Status functions
@@ -130,73 +146,43 @@ add_custom_repos()
 {
 [ -n "${CUSTOM_REPOS}" ] || { echo "You must set CUSTOM_REPOS firstly."; return 1; }
 local repos=(${CUSTOM_REPOS//,/ })
-local repo name err i
+local repo name
 for repo in ${repos[@]}; do
 name=$(sed -n -r 's/\[(\w+)\].*/\1/p' <<< ${repo})
 [ -n "${name}" ] || continue
-[ -z $(sed -rn "/^\[${name}]\s*$/p" /etc/pacman.conf) ] || continue
+[ -z $(sed -rn "/^\\[${name}]\s*$/p" /etc/pacman.conf) ] || continue
 cp -vf /etc/pacman.conf{,.orig}
 sed -r 's/]/&\nServer = /' <<< ${repo} >> /etc/pacman.conf
 sed -i -r 's/^(SigLevel\s*=\s*).*/\1Never/' /etc/pacman.conf
-for ((i=0; i<5; i++)); do
-err=$(
-LANG=en_US.UTF-8 pacman --sync --refresh --needed --noconfirm --disable-download-timeout ${name}-keyring 2>&1 | tee /proc/self/fd/2 | sed -n "/error: target not found: ${name}-keyring/p"
-exit ${PIPESTATUS}
-)
-[ $? == 0 ] && break
-[ -n "${err}" ] && break
-done
-[ -z "${err}" ] && name="" || name="SigLevel = Never\n"
+pacman --sync --refresh --needed --noconfirm --disable-download-timeout ${name}-keyring && name="" || name="SigLevel = Never\n"
 mv -vf /etc/pacman.conf{.orig,}
 sed -r "s/]/&\n${name}Server = /" <<< ${repo} >> /etc/pacman.conf
-done
-}
-
-# Enable multilib repository
-enable_multilib_repo()
-{
-[ "${PACMAN_ARCH}" == "x86_64" ] || [ "${PACMAN_ARCH}" == "i686" ] || return 0
-[ -z $(sed -rn "/^\[multilib]\s*$/p" /etc/pacman.conf) ] || return 0
-printf "[multilib]\nInclude = /etc/pacman.d/mirrorlist\n"  >> /etc/pacman.conf
-}
-
-# Add old packages repository
-add_archive_repo()
-{
-local archive_repo
-local archive_repo_sed archive_repo_sed_date
-local i d
-
-case "${PACMAN_ARCH}" in
-	x86_64) archive_repo='https://archive.archlinux.org/repos/date/$repo/os/$arch' ;;
-	arm*|aarch64) archive_repo='http://tardis.tiny-vps.com/aarm/repos/date/$arch/$repo' ;;
-	*) return 0 ;;
-esac
-
-for ((i=1; i<=365; i++)); do
-d=$(date -d "-${i} day" '+%Y/%m/%d')
-archive_repo_sed_date=$(sed "s|date|${d}|" <<< "${archive_repo}")
-archive_repo_sed="${archive_repo_sed_date//\//\\/}"
-archive_repo_sed=${archive_repo_sed//$/\\$}
-[ -z $(sed -rn "/^Server = ${archive_repo_sed}/p" /etc/pacman.d/mirrorlist) ] && \
-printf "Server = ${archive_repo_sed_date}\n" >> /etc/pacman.d/mirrorlist
 done
 }
 
 # Function: Sign one or more pkgballs.
 create_package_signature()
 {
-[ -n "${PGP_KEY_PASSWD}" ] || { echo "You must set PGP_KEY_PASSWD firstly."; return 1; } 
+[ -n "${PGP_KEY_PASSWD}" ] || { echo "You must set PGP_KEY_PASSWD firstly."; return 1; }
 local pkg
-
 # signature for distrib packages.
-(ls ${ARTIFACTS_PATH}/*${PKGEXT} &>/dev/null) && {
-pushd ${ARTIFACTS_PATH}
+(ls ${PKG_ARTIFACTS_PATH}/*${PKGEXT} &>/dev/null) && {
+pushd ${PKG_ARTIFACTS_PATH}
 for pkg in *${PKGEXT}; do
 gpg --pinentry-mode loopback --passphrase "${PGP_KEY_PASSWD}" -o "${pkg}.sig" -b "${pkg}"
 done
 popd
 }
+
+# signature for source packages.
+(ls ${SRC_ARTIFACTS_PATH}/*${SRCEXT} &>/dev/null) && {
+pushd ${SRC_ARTIFACTS_PATH}
+for pkg in *${SRCEXT}; do
+gpg --pinentry-mode loopback --passphrase "${PGP_KEY_PASSWD}" -o "${pkg}.sig" -b "${pkg}"
+done
+popd
+}
+
 return 0
 }
 
@@ -211,73 +197,75 @@ gpg --import --pinentry-mode loopback --passphrase "${PGP_KEY_PASSWD}" <<< "${PG
 # Build package
 build_package()
 {
-[ -n "${ARTIFACTS_PATH}" ] || { echo "You must set ARTIFACTS_PATH firstly."; return 1; }
-local pkgname item ret=0
-unset PKGEXT
-_package_info depends{,_${PACMAN_ARCH}} makedepends{,_${PACMAN_ARCH}} optdepends{,_${PACMAN_ARCH}} pkgname PKGEXT arch
+[ -n "${PKG_ARTIFACTS_PATH}" ] || { echo "You must set PKG_ARTIFACTS_PATH firstly."; return 1; }
+[ -n "${SRC_ARTIFACTS_PATH}" ] || { echo "You must set SRC_ARTIFACTS_PATH firstly."; return 1; }
+[ "$(_last_package_hash)" == "$(_now_package_hash)" ] && { echo "The package '${package}' has beed built, skip."; return 0; }
+unset PKGEXT SRCEXT
+
+rm -rf ${PKG_ARTIFACTS_PATH}
+rm -rf ${SRC_ARTIFACTS_PATH}
+
+_package_info PKGEXT SRCEXT
 [ -n "${PKGEXT}" ] || PKGEXT=$(grep -Po "^PKGEXT=('|\")?\K[^'\"]+" /etc/makepkg.conf)
 export PKGEXT=${PKGEXT}
+[ -n "${SRCEXT}" ] || SRCEXT=$(grep -Po "^SRCEXT=('|\")?\K[^'\"]+" /etc/makepkg.conf)
+export SRCEXT=${SRCEXT}
 
-[ ${ret} == 0 ] && [ -n "${depends}" ] && { pacman -S --needed --noconfirm --disable-download-timeout ${depends[@]} || ret=1; }
-[ ${ret} == 0 ] && [ -n "$(eval echo \${depends_${PACMAN_ARCH}})" ] && { eval pacman -S --needed --noconfirm --disable-download-timeout \${depends_${PACMAN_ARCH}[@]} || ret=1; }
-[ ${ret} == 0 ] && [ -n "${makedepends}" ] && { pacman -S --needed --noconfirm --disable-download-timeout ${makedepends[@]} || ret=1; }
-[ ${ret} == 0 ] && [ -n "$(eval echo \${makedepends_${PACMAN_ARCH}})" ] && { eval pacman -S --needed --noconfirm --disable-download-timeout \${makedepends_${PACMAN_ARCH}[@]} || ret=1; }
-[ ${ret} == 0 ] && [ -n "${optdepends}" ] && {
-optdepends=($(for ((i=0; i<${#optdepends[@]}; i++)); do grep -Po '^[^:]+' <<< "${optdepends[i]}"; done))
-pacman -S --needed --noconfirm --disable-download-timeout ${optdepends[@]} || ret=1
-}
-[ ${ret} == 0 ] && [ -n "$(eval echo \${optdepends_${PACMAN_ARCH}})" ] && {
-eval optdepends_${PACMAN_ARCH}="(\$(for ((i=0; i<\${#optdepends_${PACMAN_ARCH}[@]}; i++)); do grep -Po '^[^:]+' <<< \"\${optdepends[i]}\"; done))"
-eval pacman -S --needed --noconfirm --disable-download-timeout \${optdepends_${PACMAN_ARCH}[@]} || ret=1
-}
-[ ${ret} == 0 ] && [ -n "${optdepends}" ] && { pacman -S --needed --noconfirm --disable-download-timeout ${optdepends[@]} || ret=1; }
-[ ${ret} == 0 ] && [ -n "$(eval echo \${optdepends_${PACMAN_ARCH}})" ] && { eval pacman -S --needed --noconfirm --disable-download-timeout \${optdepends_${PACMAN_ARCH}[@]} || ret=1; }
-[ ${ret} == 0 ] && { [ "${arch}" == any ] || grep -Pwq "${PACMAN_ARCH}" <<< ${arch[@]} || sed -i -r "s|^(arch=[^)]+)(\))|\1 ${PACMAN_ARCH}\2|" PKGBUILD; }
-
-[ ${ret} == 0 ] && runuser -u alarm -- makepkg --noconfirm --skippgpcheck --nocheck --syncdeps --nodeps --cleanbuild
+makepkg --noconfirm --skippgpcheck --nocheck --syncdeps --rmdeps --cleanbuild &&
+makepkg --noconfirm --noprogressbar --allsource --skippgpcheck
 
 (ls *${PKGEXT} &>/dev/null) && {
-mkdir -pv ${ARTIFACTS_PATH}
-mv -vf *${PKGEXT} ${ARTIFACTS_PATH}
+mkdir -pv ${PKG_ARTIFACTS_PATH}
+mv -vf *${PKGEXT} ${PKG_ARTIFACTS_PATH}
 true
-} || {
-for item in ${pkgname[@]}; do
-export FILED_PKGS=(${FILED_PKGS[@]} ${PACMAN_REPO}/${item})
-done
 }
-return ${ret}
+
+(ls *${SRCEXT} &>/dev/null) && {
+mkdir -pv ${SRC_ARTIFACTS_PATH}
+mv -vf *${SRCEXT} ${SRC_ARTIFACTS_PATH}
+true
+}
 }
 
 # deploy artifacts
 deploy_artifacts()
 {
-[ -n "${DEPLOY_PATH}" ] || { echo "You must set DEPLOY_PATH firstly."; return 1; } 
+[ -n "${PKG_DEPLOY_PATH}" ] || { echo "You must set PKG_DEPLOY_PATH firstly."; return 1; }
+[ -n "${SRC_DEPLOY_PATH}" ] || { echo "You must set SRC_DEPLOY_PATH firstly."; return 1; }
 local old_pkgs pkg file
-(ls ${ARTIFACTS_PATH}/*${PKGEXT} &>/dev/null) || { echo "Skiped, no file to deploy"; return 0; }
 
-_lock_file ${DEPLOY_PATH}/${PACMAN_REPO}.db
+(ls ${PKG_ARTIFACTS_PATH}/*${PKGEXT} &>/dev/null) || { echo "Skiped, no file to deploy"; return 0; }
+
+_lock_file ${PKG_DEPLOY_PATH}/${PACMAN_REPO}.db
 
 echo "Adding package information to datdabase ..."
-pushd ${ARTIFACTS_PATH}
+pushd ${PKG_ARTIFACTS_PATH}
 export PKG_FILES=(${PKG_FILES[@]} $(ls *${PKGEXT}))
 for file in ${PACMAN_REPO}.{db,files}{,.tar.xz}{,.old}; do
-rclone copy ${DEPLOY_PATH}/${file} ${PWD} 2>/dev/null || true
+rclone lsf ${PKG_DEPLOY_PATH}/${file} &>/dev/null || continue
+while ! rclone copy ${PKG_DEPLOY_PATH}/${file} ${PWD}; do :; done
 done
-old_pkgs=($(repo-add "${PACMAN_REPO}.db.tar.xz" *${PKGEXT} | tee /proc/self/fd/2 | grep -Po "\bRemoving existing entry '\K[^']+(?=')"))
-popd
+old_pkgs=($(repo-add "${PACMAN_REPO}.db.tar.xz" *${PKGEXT} | tee /dev/stderr | grep -Po "\bRemoving existing entry '\K[^']+(?=')" || true))
 
 echo "Tring to delete old files on remote server ..."
 for pkg in ${old_pkgs[@]}; do
-for file in ${pkg}-{${PACMAN_ARCH},any}${PKGEXT}{,.sig}; do
-rclone deletefile ${DEPLOY_PATH}/${file} 2>/dev/null || true
+for file in ${pkg}-{${PACMAN_ARCH},any}.pkg.tar.{xz,zst}{,.sig}; do
+rclone delete ${PKG_DEPLOY_PATH}/${file} 2>/dev/null || true
+done
+for file in ${pkg}${SRCEXT}{,.sig}; do
+rclone delete ${SRC_DEPLOY_PATH}/${file} 2>/dev/null || true
 done
 done
 
 echo "Uploading new files to remote server ..."
-rclone copy ${ARTIFACTS_PATH} ${DEPLOY_PATH} --copy-links
+rclone move ${PKG_ARTIFACTS_PATH} ${PKG_DEPLOY_PATH} --copy-links --delete-empty-src-dirs
 
-_release_file ${DEPLOY_PATH}/${PACMAN_REPO}.db
-_record_package_hash ${PACMAN_REPO}/${CI_REPO#*/}
+(ls ${SRC_ARTIFACTS_PATH}/*${SRCEXT} &>/dev/null) && 
+rclone move ${SRC_ARTIFACTS_PATH} ${SRC_DEPLOY_PATH} --copy-links --delete-empty-src-dirs
+
+popd
+_release_file ${PKG_DEPLOY_PATH}/${PACMAN_REPO}.db
+_record_package_hash
 }
 
 # create mail message
@@ -304,7 +292,7 @@ done
 [ -n "${message}" ] && {
 message+="<p>Architecture: ${PACMAN_ARCH}</p>"
 message+="<p>Build Number: ${CI_BUILD_NUMBER}</p>"
-echo ::set-output name=message::${message}
+echo "message=${message}" >>$GITHUB_OUTPUT
 }
 
 return 0
@@ -313,10 +301,10 @@ return 0
 # Run from here
 cd ${CI_BUILD_DIR}
 message 'Install build environment.'
-[ -z "${PACMAN_ARCH}" ] && export PACMAN_ARCH=$(sed -nr 's|^CARCH=\"(\w+).*|\1|p' /etc/makepkg.conf)
 [ -z "${PACMAN_REPO}" ] && { echo "Environment variable 'PACMAN_REPO' is required."; exit 1; }
-[ -z "${ARTIFACTS_PATH}" ] && export ARTIFACTS_PATH=artifacts/${PACMAN_ARCH}/${PACMAN_REPO}
-[[ ${ARTIFACTS_PATH} =~ '$' ]] && eval export ARTIFACTS_PATH=${ARTIFACTS_PATH}
+[[ ${PACMAN_REPO} =~ '$' ]] && eval export PACMAN_REPO=${PACMAN_ARCH}
+[ -z "${PACMAN_ARCH}" ] && export PACMAN_ARCH=$(sed -nr 's|^CARCH=\"(\w+).*|\1|p' /etc/makepkg.conf)
+[[ ${PACMAN_ARCH} =~ '$' ]] && eval export PACMAN_ARCH=${PACMAN_ARCH}
 [ -z "${DEPLOY_PATH}" ] && { echo "Environment variable 'DEPLOY_PATH' is required."; exit 1; }
 [[ ${DEPLOY_PATH} =~ '$' ]] && eval export DEPLOY_PATH=${DEPLOY_PATH}
 [ -z "${RCLONE_CONF}" ] && { echo "Environment variable 'RCLONE_CONF' is required."; exit 1; }
@@ -327,26 +315,13 @@ CUSTOM_REPOS=$(sed -e 's/$arch\b/\\$arch/g' -e 's/$repo\b/\\$repo/g' <<< ${CUSTO
 [[ ${CUSTOM_REPOS} =~ '$' ]] && eval export CUSTOM_REPOS=${CUSTOM_REPOS}
 add_custom_repos
 }
-enable_multilib_repo
-add_archive_repo
 
-for (( i=0; i<5; i++ )); do
-pacman --sync --refresh --sysupgrade --needed --noconfirm --disable-download-timeout base-devel rclone git jq && break
-done || {
-create_mail_message "Failed to install build environment."
-failure "Cannot install all required packages."
-exit 1
-}
-[ -f /etc/default/useradd ] && {
-DEFAULT_GROUP=$(grep -Po "^GROUP=\K\S+" /etc/default/useradd)
-grep -Pq "^${DEFAULT_GROUP}:" /etc/group || groupadd "${DEFAULT_GROUP}"
-}
+PKG_DEPLOY_PATH=${DEPLOY_PATH%% *}
+SRC_DEPLOY_PATH=$(dirname ${PKG_DEPLOY_PATH})/sources
+PKG_ARTIFACTS_PATH=${PWD}/artifacts/${PACMAN_REPO}/${PACMAN_ARCH}/package
+SRC_ARTIFACTS_PATH=${PWD}/artifacts/${PACMAN_REPO}/${PACMAN_ARCH}/sources
 
-getent group alarm &>/dev/null || groupadd alarm
-getent passwd alarm &>/dev/null || useradd -m alarm -s "/bin/bash" -g "alarm"
-chown -R alarm:alarm ${CI_BUILD_DIR}
-getent group http &>/dev/null || groupadd -g 33 http
-getent passwd http &>/dev/null || useradd -m -u 33 http -s "/usr/bin/nologin" -g "http" -d "/srv/http"
+pacman --sync --needed --noconfirm --disable-download-timeout base-devel rclone-bin expect git jq
 
 RCLONE_CONFIG_PATH=$(rclone config file | tail -n1)
 mkdir -pv $(dirname ${RCLONE_CONFIG_PATH})
@@ -354,12 +329,12 @@ mkdir -pv $(dirname ${RCLONE_CONFIG_PATH})
 base64 --decode <<< "${RCLONE_CONF}" > ${RCLONE_CONFIG_PATH} ||
 printf "${RCLONE_CONF}" > ${RCLONE_CONFIG_PATH}
 import_pgp_seckey
-trap "_release_file ${DEPLOY_PATH}/${PACMAN_REPO}.db" EXIT
+
+trap "_release_file ${PKG_DEPLOY_PATH}/${PACMAN_REPO}.db" EXIT
 success 'The build environment is ready successfully.'
 # Build
 execute 'Building packages' build_package
 execute "Generating package signature" create_package_signature
-success 'All packages built successfully'
 execute "Deploying artifacts" deploy_artifacts
 create_mail_message
 success 'All artifacts have been deployed successfully'
