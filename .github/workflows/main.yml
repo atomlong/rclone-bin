@@ -30,7 +30,6 @@ jobs:
     - name: Run on Msys2
       uses: atomlong/run-on-msys-action@master
       id: runcmd
-      if: steps.sync.outputs.has_new_commits != 'false'
       with:
         rcloneConfig: ${{ secrets.RCLONE_CONF }}
         pgpKey: ${{ secrets.PGP_KEY }}
