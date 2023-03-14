@@ -27,12 +27,6 @@ jobs:
       id: checkout
       with:
         fetch-depth: 0
-    - uses: msys2/setup-msys2@v2
-      id: setup
-      with:
-        msystem: MSYS
-        install: git base-devel msys2-devel
-        update: true
     - name: Run on Msys2
       uses: atomlong/run-on-msys-action@master
       id: runcmd
