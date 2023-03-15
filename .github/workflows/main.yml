@@ -50,4 +50,5 @@ jobs:
         to: ${{secrets.MAIL_TO}}
         from: Github
         content_type: text/html
+        attachments: ${{ steps.runcmd.outputs.logs }}
         
