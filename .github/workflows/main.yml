@@ -46,9 +46,8 @@ jobs:
         username: ${{secrets.MAIL_USERNAME}}
         password: ${{secrets.MAIL_PASSWORD}}
         subject: Github Actions job of ${{github.repository}} result
-        body: ${{ steps.runcmd.outputs.message }}
+        html_body: ${{ steps.runcmd.outputs.message }}
         to: ${{secrets.MAIL_TO}}
         from: Github
-        content_type: text/html
         attachments: ${{ steps.runcmd.outputs.logs }}
         
