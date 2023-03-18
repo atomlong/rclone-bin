@@ -17,6 +17,7 @@ on:
 jobs:
   build-msys2-pkg:
     runs-on: windows-latest
+    if: github.event.repository.owner.id == github.event.sender.id || github.event_name == 'schedule'
     steps:
     - name: Set git to use LF
       id: gitconfig
