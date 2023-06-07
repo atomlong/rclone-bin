@@ -1,6 +1,9 @@
   
 name: makepkg CI
 
+permissions:
+  contents: write
+
 on: 
   release:
     types: [published]
@@ -24,7 +27,7 @@ jobs:
       run: |
         git config --global core.autocrlf false
         git config --global core.eol lf
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v3.5.2
       id: checkout
       with:
         fetch-depth: 0
@@ -39,7 +42,7 @@ jobs:
         deployPath: ${{ secrets.DEPLOY_PATH }}
         customRepos: ${{ secrets.CUSTOM_REPOS }}
     - name: Send mail
-      uses: atomlong/send-mail-action@v3
+      uses: atomlong/send-mail-action@v3.7.2
       if: ${{ steps.runcmd.outputs.message != '' }}
       with:
         server_address: ${{secrets.MAIL_HOST}}
